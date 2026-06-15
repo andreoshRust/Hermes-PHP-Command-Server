@@ -21,13 +21,13 @@
 
 text
 
-┌────────────┐     HTTP POST      ┌──────────────┐     shell_exec()    ┌────────────────┐
-│   AI Agent      │ ─────────────► │   PHP Server    │ ────────────► │  Windows CMD   │
-│   (Hermes)      │ ◄───────────── │   (api.php)       │ ◄──────────── │   (HermesAgent) │
-└─────────────┘     JSON ответ     └─────────────┘     stdout/stderr  └────────────────┘
-        ▲                                                                             │
-        │                                                                              ▼
-        └────────────────────── GET action=help ────────────────► Проверка прав
+┌──────────┐  HTTP POST ┌───────────┐ shell_exec()  ┌──────────────┐
+│  AI Agent  │ ─────────► │ PHP Server │ ─────────► │ Windows CMD │
+│  (Hermes)  │ ◄───────── │ (api.php)    │ ◄───────── │ (HermesAgent) │
+└──────────┘  JSON ответ └───────────┘stdout/stderr└──────────────┘
+        ▲                                                                        │
+        │                                                                         ▼
+        └────────────────────── GET action=help ───► Проверка прав
 
 ### Компоненты:
 
@@ -151,9 +151,9 @@ text
 │  1. POST action=submit 
 │  2. {task_id: "task_xxx"}  ◄────────── 
 │  3. GET action=result&task_id ─────► 
-│  4. {"status":"pending"}  ◄───── (ещё не готово)
+│  4. {"status":"pending"}  ◄── (ещё не готово)
 │  ... повторяем шаг 3-4 ...   
-│  5. {"status":"completed",   "result":"..."}  ◄────
+│  5. {"status":"completed",   "result":"..."}  ◄──
 
 #### Пример использования
 
