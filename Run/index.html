@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hermes Command Server</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+            font-family: 'Segoe UI', 'Fira Code', monospace;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        /* Header */
+        .header {
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 20px 30px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255,255,255,0.2);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            background: linear-gradient(135deg, #a8edea, #fed6e3);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            margin-bottom: 10px;
+        }
+        
+        .version-badge {
+            display: inline-block;
+            background: #4a4e69;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            color: #c9d1d9;
+            margin-top: 10px;
+        }
+        
+        .server-status {
+            display: inline-block;
+            background: #2ea043;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            margin-left: 10px;
+        }
+        
+        /* Status Card */
+        .status-card {
+            background: rgba(255,255,255,0.05);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .status-message {
+            padding: 15px;
+            border-radius: 12px;
+            font-size: 0.9rem;
+        }
+        
+        .status-message.waiting {
+            background: #f9e2af20;
+            border-left: 4px solid #f9e2af;
+            color: #f9e2af;
+        }
+        
+        .status-message.ready {
+            background: #a6e3a120;
+            border-left: 4px solid #a6e3a1;
+            color: #a6e3a1;
+        }
+        
+        .status-message.error {
+            background: #f38ba820;
+            border-left: 4px solid #f38ba8;
+            color: #f38ba8;
+        }
+        
+        /* Main Panel */
+        .main-panel {
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(5px);
+            border-radius: 20px;
+            padding: 30px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .input-group {
+            margin-bottom: 25px;
+        }
+        
+        .input-group label {
+            display: block;
+            margin-bottom: 10px;
+            color: #a8edea;
+            font-weight: bold;
+        }
+        
+        .command-input {
+            width: 100%;
+            padding: 15px;
+            background: #1a1a2e;
+            border: 2px solid #4a4e69;
+            border-radius: 12px;
+            color: #cdd6f4;
+            font-family: 'Fira Code', monospace;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+        
+        .command-input:focus {
+            outline: none;
+            border-color: #a8edea;
+            box-shadow: 0 0 10px rgba(168,237,234,0.3);
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-bottom: 25px;
+        }
+        
+        button {
+            padding: 12px 24px;
+            font-size: 1rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-family: inherit;
+        }
+        
+        .btn-init {
+            background: #a6e3a1;
+            color: #1a1a2e;
+        }
+        
+        .btn-init:hover {
+            background: #94e2b5;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(166,227,161,0.4);
+        }
+        
+        .btn-execute {
+            background: #89b4fa;
+            color: #1a1a2e;
+        }
+        
+        .btn-execute:hover {
+            background: #b4befe;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(137,180,250,0.4);
+        }
+        
+        .btn-help {
+            background: #cba6f7;
+            color: #1a1a2e;
+        }
+        
+        .btn-help:hover {
+            background: #f5c2e7;
+            transform: translateY(-2px);
+        }
+        
+        .btn-clear {
+            background: #f38ba8;
+            color: #1a1a2e;
+        }
+        
+        .btn-clear:hover {
+            background: #eba0ac;
+            transform: translateY(-2px);
+        }
+        
+        /* Output Panel */
+        .output-panel {
+            margin-top: 25px;
+        }
+        
+        .output-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            color: #a8edea;
+        }
+        
+        .output-content {
+            background: #0d0d1a;
+            border-radius: 12px;
+            padding: 20px;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.85rem;
+            color: #cdd6f4;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 500px;
+            overflow-y: auto;
+            border: 1px solid #4a4e69;
+        }
+        
+        .timing-info {
+            margin-top: 10px;
+            font-size: 0.75rem;
+            color: #6c7086;
+            text-align: right;
+        }
+        
+        /* Footer */
+        .footer {
+            margin-top: 30px;
+            text-align: center;
+            color: #6c7086;
+            font-size: 0.75rem;
+        }
+        
+        hr {
+            border-color: #4a4e69;
+            margin: 20px 0;
+        }
+        
+        /* Scrollbar */
+        .output-content::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        .output-content::-webkit-scrollbar-track {
+            background: #1a1a2e;
+            border-radius: 10px;
+        }
+        
+        .output-content::-webkit-scrollbar-thumb {
+            background: #4a4e69;
+            border-radius: 10px;
+        }
+        
+        /* Animations */
+        @keyframes pulse {
+            0% { opacity: 0.6; }
+            100% { opacity: 1; }
+        }
+        
+        .loading {
+            animation: pulse 1s infinite;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>🦊 Hermes Command Server</h1>
+        <div>
+            <span class="version-badge" id="serverVersion">v3.0.0</span>
+            <span class="server-status" id="serverStatus">● Checking...</span>
+        </div>
+    </div>
+    
+    <div class="status-card">
+        <div id="statusMessage" class="status-message waiting">
+            ⚠️ Click "Initialize & Test" to setup password and test access
+        </div>
+    </div>
+    
+    <div class="main-panel">
+        <div class="input-group">
+            <label>📝 Command</label>
+            <input type="text" id="commandInput" class="command-input" 
+                   placeholder="cmd: dir D:\PortableAI" value="cmd: dir D:\PortableAI">
+        </div>
+        
+        <div class="button-group">
+            <button class="btn-init" onclick="initializeAndTest()">🔐 Initialize & Test</button>
+            <button class="btn-execute" onclick="executeCommand()">▶ Execute</button>
+            <button class="btn-help" onclick="getHelp()">📖 Help</button>
+            <button class="btn-clear" onclick="clearOutput()">🗑 Clear</button>
+        </div>
+        
+        <div class="output-panel">
+            <div class="output-header">
+                <span>📋 Output</span>
+                <span id="timingInfo" class="timing-info"></span>
+            </div>
+            <div id="outputContent" class="output-content">Ready. Click "Initialize & Test" first.</div>
+        </div>
+    </div>
+    
+    <div class="footer">
+        <hr>
+        <p>Hermes Command Server v3.0 | Secure execution with user-level permissions | 🔒 Blocked commands: format, shutdown, taskkill, etc.</p>
+    </div>
+</div>
+
+<script>
+    const API = '/api.php';
+    const AUTH = 'Bearer your_secret_token_here';
+    let currentVersion = '';
+
+    async function getHelp() {
+        const output = document.getElementById('outputContent');
+        output.innerText = 'Loading help...';
+        
+        try {
+            const res = await fetch(API + '?action=help', {headers: {'Authorization': AUTH}});
+            const data = await res.json();
+            
+            if (data.version) {
+                currentVersion = data.version;
+                document.getElementById('serverVersion').innerText = 'v' + currentVersion;
+                document.getElementById('serverStatus').innerHTML = '● Online';
+                document.getElementById('serverStatus').style.background = '#2ea043';
+            }
+            
+            output.innerText = data.help || JSON.stringify(data);
+        } catch(e) {
+            output.innerText = 'Error: ' + e.message;
+        }
+    }
+
+    async function initializeAndTest() {
+        const output = document.getElementById('outputContent');
+        const statusDiv = document.getElementById('statusMessage');
+        const timingSpan = document.getElementById('timingInfo');
+        
+        output.innerText = '🔐 Initializing...\n\nA PowerShell window may appear.\nPlease enter password: 123\n\nWaiting for response...';
+        statusDiv.className = 'status-message waiting';
+        
+        try {
+            const startTime = Date.now();
+            const res = await fetch(API, {
+                method: 'POST',
+                headers: {'Authorization': AUTH, 'Content-Type': 'application/json'},
+                body: JSON.stringify({action: 'execute', query: 'cmd: echo "Hermes Server v3 initialized" && dir D:\\PortableAI'})
+            });
+            const data = await res.json();
+            const duration = Date.now() - startTime;
+            
+            if (data.version) {
+                currentVersion = data.version;
+                document.getElementById('serverVersion').innerText = 'v' + currentVersion;
+            }
+            
+            if (data.status === 'success') {
+                statusDiv.className = 'status-message ready';
+                statusDiv.innerHTML = '✅ Initialized! Password saved. Server is ready to execute commands.';
+                document.getElementById('serverStatus').innerHTML = '● Online';
+                document.getElementById('serverStatus').style.background = '#2ea043';
+                output.innerText = '✅ INITIALIZATION SUCCESSFUL!\n\nTest command result:\n' + data.result;
+                timingSpan.innerText = 'Response time: ' + duration + ' ms';
+            } else {
+                statusDiv.className = 'status-message error';
+                statusDiv.innerHTML = '❌ Initialization failed. Check console for details.';
+                output.innerText = 'Error: ' + JSON.stringify(data);
+            }
+        } catch(e) {
+            statusDiv.className = 'status-message error';
+            statusDiv.innerHTML = '❌ Connection error. Make sure PHP server is running.';
+            output.innerText = 'Error: ' + e.message;
+        }
+    }
+
+    async function executeCommand() {
+        const cmd = document.getElementById('commandInput').value;
+        const output = document.getElementById('outputContent');
+        const timingSpan = document.getElementById('timingInfo');
+        
+        if (!cmd.toLowerCase().startsWith('cmd:')) {
+            output.innerText = 'Error: Command must start with "cmd:"\nExample: cmd: dir D:\\PortableAI';
+            return;
+        }
+        
+        output.innerText = 'Executing...';
+        
+        try {
+            const startTime = Date.now();
+            const res = await fetch(API, {
+                method: 'POST',
+                headers: {'Authorization': AUTH, 'Content-Type': 'application/json'},
+                body: JSON.stringify({action: 'execute', query: cmd})
+            });
+            const data = await res.json();
+            const duration = Date.now() - startTime;
+            
+            if (data.version && data.version !== currentVersion) {
+                currentVersion = data.version;
+                document.getElementById('serverVersion').innerText = 'v' + currentVersion;
+            }
+            
+            output.innerText = data.result;
+            timingSpan.innerText = 'Response time: ' + duration + ' ms';
+        } catch(e) {
+            output.innerText = 'Error: ' + e.message;
+        }
+    }
+
+    function clearOutput() {
+        document.getElementById('outputContent').innerText = '';
+        document.getElementById('timingInfo').innerText = '';
+    }
+
+    // Auto-check server version on load
+    getHelp();
+</script>
+</body>
+</html>
