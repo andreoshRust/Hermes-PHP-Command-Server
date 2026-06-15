@@ -15,7 +15,7 @@ echo.
 for /f "tokens=1-3 delims=.: " %%a in ('echo %time%') do set "mytime=%%a:%%b:%%c"
 git commit -m "Update from %date% %mytime%"
 
-git push origin master
+git push origin main
 
 echo.
 echo ========================================
