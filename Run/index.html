@@ -257,59 +257,84 @@
         }
     }
 
-    async function showDocList() {
-        const output = document.getElementById('outputContent');
-        output.innerText = 'Loading document list...';
-        
-        try {
-            const res = await fetch('/Doc.md');
-            if (!res.ok) {
-                output.innerText = 'Doc.md not found. Please create the file first.';
-                return;
-            }
-            const content = await res.text();
-            
-            const lines = content.split('\n');
-            const files = [];
-            
-            for (let line of lines) {
-                line = line.trim();
-                if (line.match(/^[A-Z]:\\/)) {
-                    files.push(line);
-                }
-            }
-            
-            if (files.length === 0) {
-                output.innerText = 'No file paths found in Doc.md\n\nAdd lines like:\nD:\\path\\to\\file.md';
-                return;
-            }
-            
-            let html = '<div style="font-family: monospace;">';
-            html += '<h3>📁 Доступные документы</h3>';
-            html += '<hr>';
-            html += '<ul class="file-list" style="list-style: none; padding-left: 0;">';
-            
-            for (let file of files) {
-                const fileName = file.split('\\').pop();
-                const dirPath = file.substring(0, file.lastIndexOf('\\'));
-                html += `<li>`;
-                html += `  📄 <strong style="color: #a6e3a1;">${escapeHtml(fileName)}</strong><br>`;
-                html += `  <span style="font-size: 0.75rem; color: #6c7086;">📁 ${escapeHtml(dirPath)}</span><br>`;
-                html += `  <button onclick="viewFileContent('${escapeJs(file)}')" class="view-btn">👁️ Просмотр</button>`;
-                html += `</li>`;
-            }
-            
-            html += '</ul>';
-            html += '<hr>';
-            html += '<p style="font-size: 0.75rem; color: #6c7086;">💡 Чтобы добавить файлы, отредактируйте Doc.md</p>';
-            html += '</div>';
-            
-            output.innerHTML = html;
-            
-        } catch(e) {
-            output.innerText = 'Error loading Doc.md: ' + e.message;
+async function showDocList() {
+    const output = document.getElementById('outputContent');
+    output.innerHTML = '<div style="text-align: center;">📂 Загрузка списка файлов...</div>';
+    
+    try {
+        const res = await fetch('/Doc.md');
+        if (!res.ok) {
+            output.innerHTML = '❌ Doc.md not found.';
+            return;
         }
+        const content = await res.text();
+        
+        const lines = content.split('\n');
+        let inFilesSection = false;
+        let files = [];
+        
+        for (let line of lines) {
+            line = line.trim();
+            if (line.startsWith('# Документация') || line.startsWith('# Файлы')) {
+                inFilesSection = true;
+                continue;
+            }
+            if (line.startsWith('# Каталоги')) {
+                inFilesSection = false;
+                continue;
+            }
+            if (inFilesSection && line.match(/^[A-Z]:\\/)) {
+                files.push(line);
+            }
+        }
+        
+        if (files.length === 0) {
+            output.innerHTML = '📭 Нет файлов для просмотра. Добавьте их в Doc.md';
+            return;
+        }
+        
+        let html = '<div style="font-family: monospace;">';
+        html += '<h3>📄 Файлы для просмотра</h3>';
+        html += '<hr>';
+        html += '<table style="width: 100%; border-collapse: collapse;">';
+        
+        for (let file of files) {
+            const fileName = file.split('\\').pop();
+            const dirPath = file.substring(0, file.lastIndexOf('\\'));
+            let canView = false;
+            
+            try {
+                const testRes = await fetch(API, {
+                    method: 'POST',
+                    headers: {'Authorization': AUTH, 'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        action: 'execute',
+                        query: `cmd:type "${file}" 2>nul`
+                    })
+                });
+                const testData = await testRes.json();
+                canView = (testData.status === 'success' && testData.result && 
+                          !testData.result.includes('не найден'));
+            } catch(e) {}
+            
+            if (canView) {
+                html += `<tr style="border-bottom: 1px solid #45475a;">`;
+                html += `<td style="padding: 10px;"><strong>📄 ${escapeHtml(fileName)}</strong><br><span style="font-size: 0.7rem; color: #888;">${escapeHtml(dirPath)}</span></td>`;
+                html += `<td style="padding: 10px; width: 100px;"><button onclick="viewFileContent('${escapeJs(file)}')" style="background: #89b4fa; color: #1a1a2e; padding: 5px 10px; border: none; border-radius: 5px; cursor: pointer;">👁️ Просмотр</button></td>`;
+                html += `</tr>`;
+            }
+        }
+        html += '</table>';
+        html += '<hr>';
+        html += '<p style="font-size: 0.75rem; color: #6c7086;">💡 Чтобы добавить файлы, отредактируйте Doc.md</p>';
+        html += '</div>';
+        
+        output.innerHTML = html;
+        
+    } catch(e) {
+        output.innerHTML = '❌ Ошибка: ' + e.message;
     }
+}
 
 async function viewFileContent(filePath) {
     const output = document.getElementById('outputContent');
