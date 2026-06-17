@@ -168,6 +168,17 @@ define('SERVER_DATE', $CONFIG['server']['date'] ?? date('Y-m-d'));
 $blockedCommands = array_map('trim', explode(',', $CONFIG['blocked_commands']['commands'] ?? ''));
 define('BLOCKED_COMMANDS', $blockedCommands);
 
+// Настройка безопасности
+//Настройка проверки путей (если ещё нет)
+$enablePathCheck = $CONFIG['security']['enable_path_check'] ?? true;
+define('ENABLE_PATH_CHECK', $enablePathCheck);
+// Настройка выполнения команд с правами доступа (в NTFS) или от текущего пользователя
+$useRunAs = $CONFIG['execution']['use_runas'] ?? false;
+define('USE_RUNAS', $useRunAs);
+// Настройка выполнения PHP-скриптов
+$allowPhpExecution = $CONFIG['security']['allow_php_execution'] ?? false;
+define('ALLOW_PHP_EXECUTION', $allowPhpExecution);
+
 // ============================================================
 // ДОПОЛНИТЕЛЬНЫЕ КОНСТАНТЫ
 // ============================================================
@@ -269,6 +280,50 @@ function handleScriptCommand($query) {
     $content = ltrim($content);
     
     file_put_contents($logFile, "  [SCRIPT] Получен: $content\n", FILE_APPEND);
+	
+// ============================================================
+// КОМАНДА: runphp - выполнение PHP-скрипта из файла
+// ============================================================
+if (preg_match('/<runphp>\s*(.+?)\s*<\/runphp>/is', $content, $matches)) {
+    // Проверяем, разрешено ли выполнение PHP
+    if (!ALLOW_PHP_EXECUTION) {
+        return "⛔ Выполнение PHP-скриптов ЗАПРЕЩЕНО администратором\n";
+    }
+    
+    $filename = trim($matches[1]);
+    $filename = cleanPath($filename);
+    
+    // Проверяем, что путь разрешен
+    if (!isPathAllowedForUser($filename)) {
+        return "⛔ ACCESS DENIED: Path '$filename' is not allowed.\n";
+    }
+    
+    // Проверяем, что файл существует
+    if (!file_exists($filename)) {
+        return "❌ Файл не найден: $filename\n";
+    }
+    
+    // Проверяем, что это PHP-файл
+    $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+    if ($ext !== 'php') {
+        return "❌ Файл должен иметь расширение .php: $filename\n";
+    }
+    
+    file_put_contents($logFile, "  [SCRIPT] runphp: $filename\n", FILE_APPEND);
+    
+    // Выполняем PHP-скрипт
+    $phpPath = getPhpPath();
+    $fullCommand = '"' . $phpPath . '" -f "' . $filename . '" 2>&1';
+    
+    file_put_contents($logFile, "  [SCRIPT] КОМАНДА: $fullCommand\n", FILE_APPEND);
+    
+    $output = shell_exec($fullCommand);
+    $output = convertEncoding($output);
+    $output = cleanOutput($output);
+    
+    return $output ?: "✅ PHP-скрипт выполнен (пустой вывод)\n";
+}	
+	
     
     // ============================================================
     // КОМАНДА: writeAdd - запись или добавление в файл
@@ -277,9 +332,8 @@ if (preg_match('/<writeAdd>\s*(.+?)\s*<\/writeAdd>\s*<Text>(.*?)<\/Text>/is', $c
     $filename = trim($matches[1]);
     $text = trim($matches[2]);
     
-file_put_contents($logFile, "  [SCRIPT] ДО ДЕКОДИРОВАНИЯ: $text\n", FILE_APPEND);
-$text = decodeAgentText($text);
-file_put_contents($logFile, "  [SCRIPT] ПОСЛЕ ДЕКОДИРОВАНИЯ: $text\n", FILE_APPEND);
+    // ✅ Декодируем текст
+    $text = decodeAgentText($text);
     
     // Очищаем путь
     $filename = cleanPath($filename);
@@ -289,35 +343,29 @@ file_put_contents($logFile, "  [SCRIPT] ПОСЛЕ ДЕКОДИРОВАНИЯ: $
         return "⛔ ACCESS DENIED: Path '$filename' is not allowed.\n";
     }
     
-    // Определяем режим: write или add
-    if (stripos($content, '<writeAdd>') !== false && stripos($content, 'add') !== false) {
-        $mode = 'add';
+    file_put_contents($logFile, "  [SCRIPT] writeAdd: $filename, text=$text\n", FILE_APPEND);
+    
+    // Создаем папку, если не существует
+    $dir = dirname($filename);
+    if (!file_exists($dir)) {
+        @mkdir($dir, 0777, true);
+    }
+    
+    // Всегда добавляем в конец
+    $flags = FILE_APPEND;
+    $textToWrite = $text . "\n";
+    $textToWrite = preg_replace('/^\xEF\xBB\xBF/', '', $textToWrite);
+    
+    $result = @file_put_contents($filename, $textToWrite, $flags);
+    
+    if ($result !== false) {
+        return "✅ Текст добавлен в файл: $filename\n";
     } else {
-        $mode = 'write';
+        return "❌ Ошибка записи файла: $filename\n";
     }
-    
-    file_put_contents($logFile, "  [SCRIPT] writeAdd: $filename, mode=$mode, text=$text\n", FILE_APPEND);
-        // Создаем папку, если не существует
-        $dir = dirname($filename);
-        if (!file_exists($dir)) {
-            @mkdir($dir, 0777, true);
-        }
-        
-        // Записываем файл
-        $flags = ($mode === 'add') ? FILE_APPEND : 0;
-		// ✅ Убираем BOM и правильно кодируем
-		$textToWrite = $text . "\n";
-		$textToWrite = preg_replace('/^\xEF\xBB\xBF/', '', $textToWrite); // Убираем BOM
-		
-        $result = @file_put_contents($filename, $text . "\n", $flags);
-        
-        if ($result !== false) {
-            return "✅ Файл успешно записан: $filename\nТекст: $text\n";
-        } else {
-            return "❌ Ошибка записи файла: $filename\n";
-        }
-    }
-    
+}
+
+   
     // ============================================================
     // КОМАНДА: read - чтение файла
     // ============================================================
@@ -340,6 +388,47 @@ file_put_contents($logFile, "  [SCRIPT] ПОСЛЕ ДЕКОДИРОВАНИЯ: $
             return "❌ Ошибка чтения файла: $filename\n";
         }
     }
+	
+// ============================================================
+// КОМАНДА: write - перезапись файла (создает новый или перезаписывает существующий)
+// ============================================================
+if (preg_match('/<write>\s*(.+?)\s*<\/write>\s*<Text>(.*?)<\/Text>/is', $content, $matches)) {
+    $filename = trim($matches[1]);
+    $text = trim($matches[2]);
+    
+    // ✅ Декодируем текст
+    $text = decodeAgentText($text);
+    
+    // Очищаем путь
+    $filename = cleanPath($filename);
+    
+    // Проверяем, что путь разрешен
+    if (!isPathAllowedForUser($filename)) {
+        return "⛔ ACCESS DENIED: Path '$filename' is not allowed.\n";
+    }
+    
+    file_put_contents($logFile, "  [SCRIPT] write: $filename, text=$text\n", FILE_APPEND);
+    
+    // Создаем папку, если не существует
+    $dir = dirname($filename);
+    if (!file_exists($dir)) {
+        @mkdir($dir, 0777, true);
+    }
+    
+    // ✅ ПЕРЕЗАПИСЬ (флаг 0 = перезапись)
+    $flags = 0;
+    $textToWrite = $text . "\n";
+    $textToWrite = preg_replace('/^\xEF\xBB\xBF/', '', $textToWrite);
+    
+    $result = @file_put_contents($filename, $textToWrite, $flags);
+    
+    if ($result !== false) {
+        return "✅ Файл перезаписан: $filename\nТекст: $text\n";
+    } else {
+        return "❌ Ошибка записи файла: $filename\n";
+    }
+}
+
     
     // ============================================================
     // КОМАНДА: delete - удаление файла
@@ -391,6 +480,164 @@ file_put_contents($logFile, "  [SCRIPT] ПОСЛЕ ДЕКОДИРОВАНИЯ: $
         return $result;
     }
     
+// ============================================================
+// КОМАНДА: copy - копирование файла
+// ============================================================
+if (preg_match('/<copy>\s*(.+?)\s*<\/copy>\s*<to>\s*(.+?)\s*<\/to>/is', $content, $matches)) {
+    $source = trim($matches[1]);
+    $dest = trim($matches[2]);
+    
+    // Очищаем пути
+    $source = cleanPath($source);
+    $dest = cleanPath($dest);
+    
+    // Проверяем, что пути разрешены
+    if (!isPathAllowedForUser($source)) {
+        return "⛔ ACCESS DENIED: Source path '$source' is not allowed.\n";
+    }
+    if (!isPathAllowedForUser($dest)) {
+        return "⛔ ACCESS DENIED: Destination path '$dest' is not allowed.\n";
+    }
+    
+    // Проверяем, что исходный файл существует
+    if (!file_exists($source)) {
+        return "❌ Файл не найден: $source\n";
+    }
+    
+    // Создаем папку для назначения, если не существует
+    $destDir = dirname($dest);
+    if (!file_exists($destDir)) {
+        @mkdir($destDir, 0777, true);
+    }
+    
+    // Копируем файл
+    if (@copy($source, $dest)) {
+        file_put_contents($logFile, "  [SCRIPT] copy: $source → $dest\n", FILE_APPEND);
+        return "✅ Файл скопирован: $source → $dest\n";
+    } else {
+        return "❌ Ошибка копирования файла: $source → $dest\n";
+    }
+}
+
+// ============================================================
+// КОМАНДА: move - перемещение файла
+// ============================================================
+if (preg_match('/<move>\s*(.+?)\s*<\/move>\s*<to>\s*(.+?)\s*<\/to>/is', $content, $matches)) {
+    $source = trim($matches[1]);
+    $dest = trim($matches[2]);
+    
+    // Очищаем пути
+    $source = cleanPath($source);
+    $dest = cleanPath($dest);
+    
+    // Проверяем, что пути разрешены
+    if (!isPathAllowedForUser($source)) {
+        return "⛔ ACCESS DENIED: Source path '$source' is not allowed.\n";
+    }
+    if (!isPathAllowedForUser($dest)) {
+        return "⛔ ACCESS DENIED: Destination path '$dest' is not allowed.\n";
+    }
+    
+    // Проверяем, что исходный файл существует
+    if (!file_exists($source)) {
+        return "❌ Файл не найден: $source\n";
+    }
+    
+    // Создаем папку для назначения, если не существует
+    $destDir = dirname($dest);
+    if (!file_exists($destDir)) {
+        @mkdir($destDir, 0777, true);
+    }
+    
+    // Перемещаем файл
+    if (@rename($source, $dest)) {
+        file_put_contents($logFile, "  [SCRIPT] move: $source → $dest\n", FILE_APPEND);
+        return "✅ Файл перемещен: $source → $dest\n";
+    } else {
+        // Если rename не сработал, пробуем copy + unlink
+        if (@copy($source, $dest) && @unlink($source)) {
+            file_put_contents($logFile, "  [SCRIPT] move (copy+unlink): $source → $dest\n", FILE_APPEND);
+            return "✅ Файл перемещен: $source → $dest\n";
+        } else {
+            return "❌ Ошибка перемещения файла: $source → $dest\n";
+        }
+    }
+}	
+	
+// ============================================================
+// КОМАНДА: mkdir - создание каталога
+// ============================================================
+if (preg_match('/<mkdir>\s*(.+?)\s*<\/mkdir>/is', $content, $matches)) {
+    $dirname = trim($matches[1]);
+    $dirname = cleanPath($dirname);
+    
+    // Проверяем, что путь разрешен
+    if (!isPathAllowedForUser($dirname)) {
+        return "⛔ ACCESS DENIED: Path '$dirname' is not allowed.\n";
+    }
+    
+    // Проверяем, существует ли уже
+    if (file_exists($dirname)) {
+        if (is_dir($dirname)) {
+            return "ℹ️ Каталог уже существует: $dirname\n";
+        } else {
+            return "❌ По пути '$dirname' существует файл, а не каталог\n";
+        }
+    }
+    
+    // Создаем каталог
+    if (@mkdir($dirname, 0777, true)) {
+        file_put_contents($logFile, "  [SCRIPT] mkdir: $dirname\n", FILE_APPEND);
+        return "✅ Каталог создан: $dirname\n";
+    } else {
+        return "❌ Ошибка создания каталога: $dirname\n";
+    }
+}
+
+// ============================================================
+// КОМАНДА: rmdir - удаление пустого каталога
+// ============================================================
+if (preg_match('/<rmdir>\s*(.+?)\s*<\/rmdir>/is', $content, $matches)) {
+    $dirname = trim($matches[1]);
+    $dirname = cleanPath($dirname);
+    
+    // Проверяем, что путь разрешен
+    if (!isPathAllowedForUser($dirname)) {
+        return "⛔ ACCESS DENIED: Path '$dirname' is not allowed.\n";
+    }
+    
+    // Проверяем, существует ли каталог
+    if (!file_exists($dirname)) {
+        return "❌ Каталог не найден: $dirname\n";
+    }
+    if (!is_dir($dirname)) {
+        return "❌ По пути '$dirname' находится файл, а не каталог\n";
+    }
+    
+    // Проверяем, пуст ли каталог
+    $files = scandir($dirname);
+    $isEmpty = true;
+    foreach ($files as $file) {
+        if ($file !== '.' && $file !== '..') {
+            $isEmpty = false;
+            break;
+        }
+    }
+    
+    if (!$isEmpty) {
+        return "❌ Каталог не пуст: $dirname\n";
+    }
+    
+    // Удаляем каталог
+    if (@rmdir($dirname)) {
+        file_put_contents($logFile, "  [SCRIPT] rmdir: $dirname\n", FILE_APPEND);
+        return "✅ Каталог удален: $dirname\n";
+    } else {
+        return "❌ Ошибка удаления каталога: $dirname\n";
+    }
+}
+
+	
     // ============================================================
     // Неизвестная script-команда
     // ============================================================
@@ -564,6 +811,13 @@ function extractPathsFromCommand($command) {
 // ============================================================
 
 function isPathAllowedForUser($path) {
+    global $enablePathCheck;
+    
+    // Если проверка отключена — разрешаем всё
+    if (!$enablePathCheck) {
+        return true;
+    }	
+	
     $realPath = realpath($path);
     if ($realPath === false) {
         return false;
@@ -1039,6 +1293,7 @@ function safeDeleteFile($command) {
 function safeExecute($command) {
     global $logFile;
     $logFile = getLogFile();
+    
     if (isBlockedCommand($command)) {
         return "⛔ ERROR: Command blocked for security reasons.\n";
     }
@@ -1058,68 +1313,74 @@ function safeExecute($command) {
     $result = null;
     $errors = [];
     
-    // Способ 1: RunAsCPP
-try {
-    $runAsPath = getRunAsPath();
-    $user = RUNAS_USER;
-    $password = RUNAS_PASSWORD;
-    
-    // ✅ ИСПРАВЛЕНО: Заменяем \\ на \ для cmd
-    $commandForCmd = str_replace('\\\\', '\\', $command);
-    $escapedCommand = str_replace('"', '\\"', $commandForCmd);
-    
-    if (file_exists($runAsPath)) {
-        $fullCommand = sprintf(
-            '"%s" %s %s "cmd.exe /c %s" . 8 2>&1',
-            $runAsPath,
-            $user,
-            $password,
-            $escapedCommand
-        );
-        
-        file_put_contents($logFile, "  [TRY 1] RunAsCPP: $fullCommand\n", FILE_APPEND);
-        $output = shell_exec($fullCommand);
-        
-        if ($output !== null && trim($output) !== '') {
-            $result = cleanOutput(convertEncoding($output));
-            file_put_contents($logFile, "  [OK] RunAsCPP успешно\n", FILE_APPEND);
-            return $result;
-        } else {
-            $errors[] = "RunAsCPP вернул пустой вывод";
+    // ============================================================
+    // СПОСОБ 1: RunAsCPP (только если включен)
+    // ============================================================
+    if (USE_RUNAS) {
+        try {
+            $runAsPath = getRunAsPath();
+            $user = RUNAS_USER;
+            $password = RUNAS_PASSWORD;
+            
+            $commandForCmd = str_replace('\\\\', '\\', $command);
+            $escapedCommand = str_replace('"', '\\"', $commandForCmd);
+            
+            if (file_exists($runAsPath)) {
+                $fullCommand = sprintf(
+                    '"%s" %s %s "cmd.exe /c %s" . 8 2>&1',
+                    $runAsPath,
+                    $user,
+                    $password,
+                    $escapedCommand
+                );
+                
+                file_put_contents($logFile, "  [TRY 1] RunAsCPP: $fullCommand\n", FILE_APPEND);
+                $output = shell_exec($fullCommand);
+                
+                if ($output !== null && trim($output) !== '') {
+                    $result = cleanOutput(convertEncoding($output));
+                    file_put_contents($logFile, "  [OK] RunAsCPP successfully\n", FILE_APPEND);
+                    return $result;
+                } else {
+                    $errors[] = "RunAsCPP вернул пустой вывод";
+                }
+            } else {
+                $errors[] = "RunAsCPP.exe не найден";
+            }
+        } catch (Exception $e) {
+            $errors[] = "RunAsCPP exception: " . $e->getMessage();
         }
+    }
+    
+// ============================================================
+// СПОСОБ 2: shell_exec (прямое выполнение)
+// ============================================================
+try {
+    // ✅ Преобразуем пути для Windows
+    $commandForCmd = str_replace('/', '\\', $command);
+    $commandForCmd = str_replace('\\\\', '\\', $commandForCmd);
+    $escapedCommand = str_replace('"', '\\"', $commandForCmd);
+    $fullCommand = "cmd.exe /c $escapedCommand 2>&1";
+    
+    $tryNumber = USE_RUNAS ? 2 : 1;
+    file_put_contents($logFile, "  [TRY $tryNumber] Direct shell: $fullCommand\n", FILE_APPEND);
+    
+    $output = shell_exec($fullCommand);
+    
+    if ($output !== null && trim($output) !== '') {
+        $result = cleanOutput(convertEncoding($output));
+        file_put_contents($logFile, "  [OK] Direct shell successfully\n", FILE_APPEND);
+        return $result;
     } else {
-        $errors[] = "RunAsCPP.exe не найден";
+        $errors[] = "Direct shell вернул пустой вывод";
     }
 } catch (Exception $e) {
-    $errors[] = "RunAsCPP exception: " . $e->getMessage();
+    $errors[] = "Direct shell exception: " . $e->getMessage();
 }
-
     
-    // Способ 2: PowerShell
-    try {
-        $escapedCommand = str_replace('"', '`"', $command);
-        $psCommand = sprintf(
-            'powershell -Command "Start-Process cmd -ArgumentList \'/c %s\' -Wait -RedirectStandardOutput ' . TEMP_DIR . '\\ps_output.txt -RedirectStandardError ' . TEMP_DIR . '\\ps_error.txt; Get-Content ' . TEMP_DIR . '\\ps_output.txt; if (Test-Path ' . TEMP_DIR . '\\ps_error.txt) { Get-Content ' . TEMP_DIR . '\\ps_error.txt }"',
-            $escapedCommand
-        );
-        
-        file_put_contents($logFile, "  [TRY 2] PowerShell: $psCommand\n", FILE_APPEND);
-        $output = shell_exec($psCommand);
-        
-        if ($output !== null && trim($output) !== '') {
-            $result = cleanOutput(convertEncoding($output));
-            @unlink(TEMP_DIR . '\\ps_output.txt');
-            @unlink(TEMP_DIR . '\\ps_error.txt');
-            file_put_contents($logFile, "  [OK] PowerShell успешно\n", FILE_APPEND);
-            return $result;
-        } else {
-            $errors[] = "PowerShell вернул пустой вывод";
-        }
-    } catch (Exception $e) {
-        $errors[] = "PowerShell exception: " . $e->getMessage();
-    }
-    
+    // ============================================================
     // ВСЕ СПОСОБЫ НЕ УДАЛИСЬ
+    // ============================================================
     $errorMsg = "❌ ВСЕ СПОСОБЫ ВЫПОЛНЕНИЯ НЕ УДАЛИСЬ:\n";
     foreach ($errors as $i => $error) {
         $errorMsg .= "  " . ($i + 1) . ". $error\n";
@@ -1129,12 +1390,14 @@ try {
     $suggestions = [
         "📌 Проверьте синтаксис команды",
         "📌 Убедитесь, что путь существует",
-        "📌 Для русских текстов используйте PowerShell"
+        "📌 Для русских текстов используйте PowerShell или script:"
     ];
     $errorResponse = smartErrorResponse($command, $errorMsg, $suggestions);
     
     return json_encode($errorResponse, JSON_UNESCAPED_UNICODE);
 }
+
+
 
 // ============================================================
 // ФУНКЦИЯ: ГЕНЕРАЦИЯ HELP
@@ -1172,43 +1435,13 @@ function generateHelp() {
     }
     $help .= "\n";
     $help .= "\n";
-    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
-    $help .= "📌 ОСНОВНЫЕ ПРАВИЛА\n";
-    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
-    $help .= "1. Все команды ДОЛЖНЫ начинаться с префикса 'cmd:'\n";
-    $help .= "2. Пример: cmd: dir D:\\PortableAI\n";
-    $help .= "3. Без префикса 'cmd:' сервер вернёт ошибку 'Use cmd: <command>'\n\n";
-    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
-    $help .= "🔒 ЗАБЛОКИРОВАННЫЕ КОМАНДЫ (не выполняются)\n";
-    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
-    $help .= "• format, diskpart, shutdown, taskkill, del /f, rmdir /s\n";
-    $help .= "• takeown, cacls, icacls, reg, sc, bcdedit\n";
-    $help .= "• net user, net localgroup, whoami\n\n";
-    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
-    $help .= "🔧 ОБЩИЕ КОМАНДЫ\n";
-    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
-    $help .= "• cmd: echo Hello World\n";
-    $help .= "• cmd: systeminfo | findstr 'OS'\n";
-    $help .= "• cmd: ipconfig\n\n";
 	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
-	$help .= "📝 ЗАПИСЬ И ЧТЕНИЕ ФАЙЛОВ (ПРОТОКОЛ script:)\n";
+	$help .= "⚙️ ТЕКУЩИЕ НАСТРОЙКИ СЕРВЕРА\n";
 	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
-	$help .= "📌 1. ЗАПИСЬ ТЕКСТА В ФАЙЛ (латиница):\n";
-	$help .= '   POST {"action":"execute","query":"script: <writeAdd>D:\\PortableAI\\DostupHermes\\file.txt</writeAdd> <Text>Hello World!</Text>"}' . "\n\n";
-	$help .= "📌 2. ЗАПИСЬ РУССКОГО ТЕКСТА (через Base64):\n";
-	$help .= '   POST {"action":"execute","query":"script: <writeAdd>D:\\PortableAI\\DostupHermes\\file.txt</writeAdd> <Text><b64>0J/RgNC40LLQtdGCINC+0YIg0JPQtdGA0LzQtdGB0LAh</b64></Text>"}' . "\n\n";
-	$help .= "📌 3. ДОБАВЛЕНИЕ В КОНЕЦ ФАЙЛА:\n";
-	$help .= '   POST {"action":"execute","query":"script: <writeAdd add>D:\\PortableAI\\DostupHermes\\file.txt</writeAdd> <Text>Новая строка!</Text>"}' . "\n\n";
-	$help .= "📌 4. ЧТЕНИЕ ФАЙЛА:\n";
-	$help .= '   POST {"action":"execute","query":"script: <read>D:\\PortableAI\\DostupHermes\\file.txt</read>"}' . "\n\n";
-	$help .= "📌 5. УДАЛЕНИЕ ФАЙЛА:\n";
-	$help .= '   POST {"action":"execute","query":"script: <delete>D:\\PortableAI\\DostupHermes\\file.txt</delete>"}' . "\n\n";
-	$help .= "📌 6. СПИСОК ФАЙЛОВ В ПАПКЕ:\n";
-	$help .= '   POST {"action":"execute","query":"script: <list>D:\\PortableAI\\DostupHermes</list>"}' . "\n\n";
-	$help .= "⚠️ ВАЖНО: Для русского текста ОБЯЗАТЕЛЬНО используйте Base64!\n";
-	$help .= "   • Кодируйте текст в Base64: 'Привет' → '0J/RgNC40LLQtdGC'\n";
-	$help .= "   • Вставляйте в теги: <b64>0J/RgNC40LLQtdGC</b64>\n";
-	$help .= "   • Сервер автоматически декодирует и запишет правильный текст\n\n";
+	$help .= "• Выполнение PHP-скриптов: " . (ALLOW_PHP_EXECUTION ? "✅ РАЗРЕШЕНО" : "❌ ЗАПРЕЩЕНО") . "\n";
+	$help .= "• Использование RunAsCPP: " . (USE_RUNAS ? "✅ ВКЛЮЧЕНО" : "❌ ОТКЛЮЧЕНО") . "\n";
+	$help .= "• Проверка путей: " . (ENABLE_PATH_CHECK ? "✅ ВКЛЮЧЕНА" : "❌ ОТКЛЮЧЕНА") . "\n";
+	$help .= "• Разрешенные каталоги: " . implode(", ", ALLOWED_DIRS) . "\n";
 	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
     $help .= "⚡ РЕЖИМЫ ВЫПОЛНЕНИЯ КОМАНД\n";
     $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
@@ -1229,6 +1462,134 @@ function generateHelp() {
     $help .= "   • Команды с таймаутом > 30 секунд\n";
     $help .= "   • Фоновые задачи\n";
     $help .= "   • Загрузка/обработка больших файлов\n\n";
+	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+	$help .= "📝 ЗАПИСЬ И ЧТЕНИЕ ФАЙЛОВ (ПРОТОКОЛ script:)\n";
+	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+	$help .= "📌 1. ЗАПИСЬ ТЕКСТА В ФАЙЛ (латиница):\n";
+	$help .= '   POST {"action":"execute","query":"script: <writeAdd>D:\\PortableAI\\DostupHermes\\file.txt</writeAdd> <Text>Hello World!</Text>"}' . "\n\n";
+	$help .= "📌 2. ЗАПИСЬ РУССКОГО ТЕКСТА (через Base64):\n";
+	$help .= '   POST {"action":"execute","query":"script: <writeAdd>D:\\PortableAI\\DostupHermes\\file.txt</writeAdd> <Text><b64>0J/RgNC40LLQtdGCINC+0YIg0JPQtdGA0LzQtdGB0LAh</b64></Text>"}' . "\n\n";
+	$help .= "📌 3. ДОБАВЛЕНИЕ В КОНЕЦ ФАЙЛА:\n";
+	$help .= '   POST {"action":"execute","query":"script: <writeAdd add>D:\\PortableAI\\DostupHermes\\file.txt</writeAdd> <Text>Новая строка!</Text>"}' . "\n\n";
+	$help .= "📌 4. ЧТЕНИЕ ФАЙЛА:\n";
+	$help .= '   POST {"action":"execute","query":"script: <read>D:\\PortableAI\\DostupHermes\\file.txt</read>"}' . "\n\n";
+	$help .= "📌 5. УДАЛЕНИЕ ФАЙЛА:\n";
+	$help .= '   POST {"action":"execute","query":"script: <delete>D:\\PortableAI\\DostupHermes\\file.txt</delete>"}' . "\n\n";
+	$help .= "📌 6. СПИСОК ФАЙЛОВ В ПАПКЕ:\n";
+	$help .= '   POST {"action":"execute","query":"script: <list>D:\\PortableAI\\DostupHermes</list>"}' . "\n\n";
+	$help .= "⚠️ ВАЖНО: Для русского текста ОБЯЗАТЕЛЬНО используйте Base64!\n";
+	$help .= "   • Кодируйте текст в Base64: 'Привет' → '0J/RgNC40LLQtdGC'\n";
+	$help .= "   • Вставляйте в теги: <b64>0J/RgNC40LLQtdGC</b64>\n";
+	$help .= "   • Сервер автоматически декодирует и запишет правильный текст\n\n";
+	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+	$help .= "📌 КОПИРОВАНИЕ И ПЕРЕМЕЩЕНИЕ ФАЙЛОВ (через script:)\n";
+	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+	$help .= "📌 1. КОПИРОВАНИЕ ФАЙЛА:\n";
+	$help .= '   POST {"action":"execute","query":"script: <copy>ИСТОЧНИК</copy> <to>НАЗНАЧЕНИЕ</to>"}' . "\n";
+	$help .= '   Пример: {"action":"execute","query":"script: <copy>D:\\PortableAI\\DostupHermes\\file.txt</copy> <to>D:\\PortableAI\\DostupHermes\\Temp\\file.txt</to>"}' . "\n\n";
+	$help .= "📌 2. ПЕРЕМЕЩЕНИЕ ФАЙЛА:\n";
+	$help .= '   POST {"action":"execute","query":"script: <move>ИСТОЧНИК</move> <to>НАЗНАЧЕНИЕ</to>"}' . "\n";
+	$help .= '   Пример: {"action":"execute","query":"script: <move>D:\\PortableAI\\DostupHermes\\file.txt</move> <to>D:\\PortableAI\\DostupHermes\\Temp\\file.txt</to>"}' . "\n";
+	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+	$help .= "📌 РАБОТА С КАТАЛОГАМИ (через script:)\n";
+	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+	$help .= "📌 1. СОЗДАНИЕ КАТАЛОГА:\n";
+	$help .= '   POST {"action":"execute","query":"script: <mkdir>ПУТЬ</mkdir>"}' . "\n";
+	$help .= '   Пример: {"action":"execute","query":"script: <mkdir>D:\\PortableAI\\DostupHermes\\NewFolder</mkdir>"}' . "\n";
+	$help .= "   • Создает все вложенные папки, если их нет\n\n";
+	$help .= "📌 2. УДАЛЕНИЕ ПУСТОГО КАТАЛОГА:\n";
+	$help .= '   POST {"action":"execute","query":"script: <rmdir>ПУТЬ</rmdir>"}' . "\n";
+	$help .= '   Пример: {"action":"execute","query":"script: <rmdir>D:\\PortableAI\\DostupHermes\\NewFolder</rmdir>"}' . "\n";
+	$help .= "   • Удаляет ТОЛЬКО пустой каталог\n";
+	$help .= "   • Если каталог не пуст — вернет ошибку\n\n";
+	$help .= "📌 3. КОПИРОВАНИЕ ФАЙЛА (создает каталог автоматически):\n";
+	$help .= '   POST {"action":"execute","query":"script: <copy>ИСТОЧНИК</copy> <to>НАЗНАЧЕНИЕ</to>"}' . "\n";
+	$help .= '   Пример: {"action":"execute","query":"script: <copy>D:\\PortableAI\\DostupHermes\\file.txt</copy> <to>D:\\PortableAI\\DostupHermes\\NewFolder\\file.txt</to>"}' . "\n\n";
+	$help .= "📌 4. ПЕРЕМЕЩЕНИЕ ФАЙЛА:\n";
+	$help .= '   POST {"action":"execute","query":"script: <move>ИСТОЧНИК</move> <to>НАЗНАЧЕНИЕ</to>"}' . "\n";
+	$help .= '   Пример: {"action":"execute","query":"script: <move>D:\\PortableAI\\DostupHermes\\file.txt</move> <to>D:\\PortableAI\\DostupHermes\\NewFolder\\file.txt</to>"}' . "\n";
+	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+	$help .= "📝 ЗАПИСЬ И ЧТЕНИЕ ФАЙЛОВ (ПРОТОКОЛ script:)\n";
+	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+	$help .= "📌 1. ПЕРЕЗАПИСЬ ФАЙЛА (создать новый или перезаписать существующий):\n";
+	$help .= '   POST {"action":"execute","query":"script: <write>ПУТЬ</write> <Text>ТЕКСТ</Text>"}' . "\n";
+	$help .= '   Пример: {"action":"execute","query":"script: <write>D:\\PortableAI\\DostupHermes\\file.txt</write> <Text>Новое содержимое</Text>"}' . "\n\n";
+	$help .= "📌 2. ДОБАВИТЬ ТЕКСТ В КОНЕЦ ФАЙЛА:\n";
+	$help .= '   POST {"action":"execute","query":"script: <writeAdd>ПУТЬ</writeAdd> <Text>ТЕКСТ</Text>"}' . "\n";
+	$help .= '   Пример: {"action":"execute","query":"script: <writeAdd>D:\\PortableAI\\DostupHermes\\file.txt</writeAdd> <Text>Дополнительная строка</Text>"}' . "\n\n";
+	$help .= "📌 3. ДОБАВИТЬ РУССКИЙ ТЕКСТ (через Base64):\n";
+	$help .= '   POST {"action":"execute","query":"script: <write>ПУТЬ</write> <Text><b64>BASE64_ТЕКСТ</b64></Text>"}' . "\n";
+	$help .= '   Пример: {"action":"execute","query":"script: <write>D:\\PortableAI\\DostupHermes\\file.txt</write> <Text><b64>0J/RgNC40LLQtdGC</b64></Text>"}' . "\n";	$help .= "⚠️ ВАЖНО:\n";
+	$help .= "   • Тег <writeAdd> ВСЕГДА добавляет текст в КОНЕЦ файла\n";
+	$help .= "   • Если файл не существует — он будет создан\n";
+	$help .= "   • Чтобы начать новый файл — сначала удалите старый через <delete>\n";
+	$help .= "   • Для русского текста ОБЯЗАТЕЛЬНО используйте Base64\n";
+	$help .= "   • Кодируйте текст в Base64: 'Привет' → '0J/RgNC40LLQtdGC'\n";
+	$help .= "   • Вставляйте в теги: <b64>0J/RgNC40LLQtdGC</b64>\n";
+	$help .= "   • Сервер автоматически декодирует и запишет правильный текст\n\n";
+	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+	$help .= "🤖 ИНСТРУКЦИЯ ДЛЯ АГЕНТА\n";
+	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+	$help .= "📌 КАК ЗАПИСАТЬ РУССКИЙ ТЕКСТ В ФАЙЛ:\n";
+	$help .= "\n";
+	$help .= "1. Закодируйте текст в Base64:\n";
+	$help .= "   Python: base64.b64encode('Текст'.encode('utf-8')).decode('utf-8')\n";
+	$help .= "   JavaScript: btoa(unescape(encodeURIComponent('Текст')))\n";
+	$help .= "\n";
+	$help .= "2. Отправьте POST-запрос:\n";
+	$help .= '   POST /api.php' . "\n";
+	$help .= '   Content-Type: application/json' . "\n";
+	$help .= '   Body: {"action":"execute","query":"script: <writeAdd>ПУТЬ</writeAdd> <Text><b64>BASE64_ТЕКСТ</b64></Text>"}' . "\n";
+	$help .= "\n";
+	$help .= "3. Пример:\n";
+	$help .= '   {"action":"execute","query":"script: <writeAdd>D:\\PortableAI\\DostupHermes\\file.txt</writeAdd> <Text><b64>0J/RgNC40LLQtdGCINC+0YIg0JPQtdGA0LzQtdGB0LAh</b64></Text>"}' . "\n";
+	$help .= "\n";
+	$help .= "4. Для добавления в конец файла:\n";
+	$help .= '   {"action":"execute","query":"script: <writeAdd add>ПУТЬ</writeAdd> <Text><b64>BASE64_ТЕКСТ</b64></Text>"}' . "\n";
+	$help .= "\n";
+	$help .= "5. Для чтения файла:\n";
+	$help .= '   {"action":"execute","query":"script: <read>ПУТЬ</read>"}' . "\n";
+	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+	$help .= "📌 ВЫПОЛНЕНИЕ PHP-СКРИПТА ИЗ ФАЙЛА (runphp)\n";
+	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+	$help .= "📌 1. СНАЧАЛА СОЗДАЙТЕ PHP-ФАЙЛ (через script writeAdd):\n";
+	$help .= '   POST {"action":"execute","query":"script: <write>D:\\PortableAI\\DostupHermes\\script.php</write> <Text><?php echo "Hello from PHP!"; ?></Text>"}' . "\n\n";
+	$help .= "📌 2. ЗАТЕМ ВЫПОЛНИТЕ ЕГО (через runphp):\n";
+	$help .= '   POST {"action":"execute","query":"script: <runphp>D:\\PortableAI\\DostupHermes\\script.php</runphp>"}' . "\n\n";
+	$help .= "⚠️ ВАЖНО:\n";
+	$help .= "   • Файл ДОЛЖЕН иметь расширение .php\n";
+	$help .= "   • Файл ДОЛЖЕН находиться в разрешенном каталоге\n";
+	$help .= "   • Выполнение PHP-скриптов может быть ОТКЛЮЧЕНО в настройках сервера\n";
+	$help .= "   • Проверьте текущие настройки в разделе 'ТЕКУЩИЕ НАСТРОЙКИ СЕРВЕРА'\n";
+    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+    $help .= "💡 Инструкция для работы через cmd: \n";
+    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+    $help .= "• Команды ДОЛЖНЫ начинаться с префикса 'cmd:'\n";
+    $help .= "• Для чтения файлов с русским текстом используйте PowerShell Get-Content -Encoding UTF8\n";
+    $help .= "• Для записи файлов ОБЯЗАТЕЛЬНО используйте PowerShell (Set-Content/Add-Content)\n";
+    $help .= "• В PowerShell командах используйте прямые слеши D:/path (не D:\\path)\n";
+    $help .= "• Команды выполняются от имени пользователя " . $perms['username'] . "\n";
+    $help .= "• Асинхронные задания автоматически удаляются после получения результата\n";
+    $help .= "• Таймаут синхронных команд: 30 секунд (настраивается в коде)\n\n";
+	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";    
+    $help .= "🔧 ОБЩИЕ КОМАНДЫ\n";
+    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+    $help .= "• cmd: echo Hello World\n";
+    $help .= "• cmd: systeminfo | findstr 'OS'\n";
+    $help .= "• cmd: ipconfig\n";
+    $help .= "• cmd: curl -s 'https://api.duckduckgo.com/?q=hello&format=json'\n\n";
+    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+    $help .= "🔒 ЗАБЛОКИРОВАННЫЕ КОМАНДЫ (не выполняются)\n";
+    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+    $help .= "• format, diskpart, shutdown, taskkill, del /f, rmdir /s\n";
+    $help .= "• takeown, cacls, icacls, reg, sc, bcdedit\n";
+    $help .= "• net user, net localgroup, whoami\n\n";
+    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+    $help .= "🔧 ОБЩИЕ КОМАНДЫ\n";
+    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+    $help .= "• cmd: echo Hello World\n";
+    $help .= "• cmd: systeminfo | findstr 'OS'\n";
+    $help .= "• cmd: ipconfig\n\n";
     $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
     $help .= "📂 РАБОТА С ФАЙЛАМИ\n";
     $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
@@ -1244,29 +1605,17 @@ function generateHelp() {
     $help .= "   cmd: dir D:\\PortableAI\n\n";
     $help .= "✅ Список файлов через PowerShell (подробный):\n";
     $help .= "   cmd: powershell -Command \"Get-ChildItem D:/PortableAI/temp\"\n\n";
-    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
-    $help .= "🔧 ОБЩИЕ КОМАНДЫ\n";
-    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
-    $help .= "• cmd: echo Hello World\n";
-    $help .= "• cmd: systeminfo | findstr 'OS'\n";
-    $help .= "• cmd: ipconfig\n";
-    $help .= "• cmd: curl -s 'https://api.duckduckgo.com/?q=hello&format=json'\n\n";
-    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
-    $help .= "🐍 ЗАПУСК ПРОГРАММ\n";
-    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
-    $help .= "• cmd: python D:\\PortableAI\\script.py\n";
-    $help .= "• cmd: node D:\\server.js\n";
-    $help .= "• cmd: notepad.exe D:\\file.txt\n\n";
-    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
-    $help .= "💡 ВАЖНЫЕ ЗАМЕЧАНИЯ\n";
-    $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
-    $help .= "• Все команды ДОЛЖНЫ начинаться с префикса 'cmd:'\n";
-    $help .= "• Для чтения файлов с русским текстом используйте PowerShell Get-Content -Encoding UTF8\n";
-    $help .= "• Для записи файлов ОБЯЗАТЕЛЬНО используйте PowerShell (Set-Content/Add-Content)\n";
-    $help .= "• В PowerShell командах используйте прямые слеши D:/path (не D:\\path)\n";
-    $help .= "• Команды выполняются от имени пользователя " . $perms['username'] . "\n";
-    $help .= "• Асинхронные задания автоматически удаляются после получения результата\n";
-    $help .= "• Таймаут синхронных команд: 30 секунд (настраивается в коде)\n\n";
+	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+	$help .= "⚠️ ВАЖНО: КОМАНДЫ CMD (copy, move, del)\n";
+	$help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
+	$help .= "📌 Для копирования файлов используйте ТОЛЬКО ОБРАТНЫЕ СЛЕШИ (\\\\):\n";
+	$help .= '   ✅ Правильно: cmd: copy "D:\\PortableAI\\DostupHermes\\file.txt" "D:\\PortableAI\\DostupHermes\\DataBase\\file.txt"' . "\n";
+	$help .= '   ❌ Неправильно: cmd: copy "D:/PortableAI/DostupHermes/file.txt" ... (прямые слеши НЕ РАБОТАЮТ)' . "\n";
+	$help .= '   ❌ Неправильно: cmd: copy "D:\\\\PortableAI\\\\DostupHermes\\\\file.txt" ... (слишком много слешей)' . "\n";
+	$help .= "\n";
+	$help .= "📌 Если копирование не работает — используйте script: протокол:\n";
+	$help .= '   1. Прочитайте файл: script: <read>D:\\PortableAI\\DostupHermes\\file.txt</read>' . "\n";
+	$help .= '   2. Запишите в новое место: script: <writeAdd>D:\\PortableAI\\DostupHermes\\DataBase\\file.txt</writeAdd> <Text>содержимое</Text>' . "\n";
     $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";
     $help .= "🌐 ПОИСК В ИНТЕРНЕТЕ\n";
     $help .= "═══════════════════════════════════════════════════════════════════════════════════════════════════════════\n";

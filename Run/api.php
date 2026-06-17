@@ -29,6 +29,7 @@ file_put_contents($logFile, $logEntry, FILE_APPEND);
 
 $method = $_SERVER['REQUEST_METHOD'];
 
+
 if ($method !== 'GET' && $method !== 'POST') {
     sendError('Unsupported HTTP method: ' . $method, ['Use GET for help or POST for commands']);
 }
