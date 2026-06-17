@@ -151,7 +151,7 @@
     </div>
     
     <input type="text" id="commandInput" class="command-input" 
-           placeholder="cmd: dir D:\PortableAI" value="cmd: dir D:\PortableAI">
+           placeholder="cmd: dir D:\PortableAI" value="cmd: dir D:\PortableAI\DostupHermes">
     <br><br>
     
     <button class="btn-init" onclick="initializeAndTest()">🔐 Initialize & Test</button>
@@ -196,7 +196,7 @@
             const res = await fetch(API, {
                 method: 'POST',
                 headers: {'Authorization': AUTH, 'Content-Type': 'application/json'},
-                body: JSON.stringify({action: 'execute', query: 'cmd: echo "Server ready" && dir D:\\PortableAI'})
+                body: JSON.stringify({action: 'execute', query: 'cmd: echo "Server ready" & dir D:\\PortableAI\\DostupHermes'})
             });
             const data = await res.json();
             const duration = Date.now() - startTime;

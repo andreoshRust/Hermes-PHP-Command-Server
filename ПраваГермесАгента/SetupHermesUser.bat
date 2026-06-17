@@ -1,21 +1,22 @@
 @echo off
+:: Проверка прав администратора
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+    echo ============================================================
+    echo   [ERROR] This script must be run as Administrator!
+    echo ============================================================
+    echo.
+    echo Right-click on this file and select "Run as administrator"
+    echo.
+    pause
+    exit /b 1
+)
+
 title Hermes Agent - User Setup
 color 0A
 
 set HERMES_USER=HermesAgent
 set HERMES_PASSWORD=123
-
-set ALLOWED_READ_DIRS=D:\PortableAI\DostupHermes
-set ALLOWED_WRITE_DIRS=D:\PortableAI\DostupHermes
-set BLOCKED_COMMANDS=format;diskpart;shutdown;taskkill;del /f;rmdir /s
-
-:: Проверка прав администратора
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [ERROR] Run as Administrator!
-    pause
-    exit /b 1
-)
 
 echo ============================================================
 echo   Hermes Agent - User Setup
@@ -34,47 +35,20 @@ if %errorlevel% equ 0 (
     echo [OK] User created
 )
 
-:: Настройка папок (правильный синтаксис для русской Windows)
+:: Настройка прав
 echo.
 echo [*] Setting folder permissions...
 
-for %%d in (%ALLOWED_READ_DIRS%) do (
-    if exist %%d (
-        icacls "%%d" /grant "%HERMES_USER%:R" /T
-    ) else (
-        mkdir "%%d" 2>nul
-        icacls "%%d" /grant "%HERMES_USER%:R" /T
-    )
-    echo [OK] Read: %%d
-)
+takeown /F D:\PortableAI\DostupHermes /R /D Y
+icacls D:\PortableAI\DostupHermes /inheritance:r /T
+icacls D:\PortableAI\DostupHermes /reset /T
+icacls D:\PortableAI\DostupHermes /grant %HERMES_USER%:(OI)(CI)F /T
+icacls D:\PortableAI\DostupHermes /remove Everyone /T 2>nul
+icacls D:\PortableAI\DostupHermes /remove "NT AUTHORITY\Authenticated Users" /T 2>nul
 
-for %%d in (%ALLOWED_WRITE_DIRS%) do (
-    if exist %%d (
-        icacls "%%d" /grant "%HERMES_USER%:RW" /T
-    ) else (
-        mkdir "%%d" 2>nul
-        icacls "%%d" /grant "%HERMES_USER%:RW" /T
-    )
-    echo [OK] Write: %%d
-)
-
-:: Запрет системных папок
+echo [OK] Permissions set!
 echo.
-echo [*] Blocking system folders...
-icacls "C:\Windows" /deny "%HERMES_USER%:R" /T 2>nul
-icacls "C:\Program Files" /deny "%HERMES_USER%:R" /T 2>nul
-icacls "C:\Program Files (x86)" /deny "%HERMES_USER%:R" /T 2>nul
-
-:: Создание конфига
-set CONFIG_FILE=D:\PortableAI\PHP\_Run\user_config.php
-
-echo ^<?php > %CONFIG_FILE%
-echo define('RUNAS_USER', '%HERMES_USER%'); >> %CONFIG_FILE%
-echo define('RUNAS_PASSWORD', '%HERMES_PASSWORD%'); >> %CONFIG_FILE%
-echo define('ALLOWED_READ_DIRS', ['%ALLOWED_READ_DIRS:;=', '%']); >> %CONFIG_FILE%
-echo define('ALLOWED_WRITE_DIRS', ['%ALLOWED_WRITE_DIRS:;=', '%']); >> %CONFIG_FILE%
-echo define('BLOCKED_COMMANDS', ['%BLOCKED_COMMANDS:;=', '%']); >> %CONFIG_FILE%
-echo ?^> >> %CONFIG_FILE%
+icacls D:\PortableAI\DostupHermes
 
 echo.
 echo ============================================================
@@ -83,10 +57,5 @@ echo ============================================================
 echo.
 echo User: %HERMES_USER%
 echo Password: %HERMES_PASSWORD%
-echo.
-echo Read:  %ALLOWED_READ_DIRS%
-echo Write: %ALLOWED_WRITE_DIRS%
-echo.
-echo Blocked: %BLOCKED_COMMANDS%
 echo.
 pause
